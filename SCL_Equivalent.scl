@@ -1,7 +1,5 @@
 // ==============================================================================
-// KUMAŞ BOYAMA MAKİNESİ - SCL (Structured Control Language) KODU
-// Açıklama: Proje geliştirme aşamasında kullanılan Ladder Logic (LAD) 
-//           State Machine (Durum Makinesi) yapısının birebir SCL karşılığıdır.
+// KUMAŞ BOYAMA MAKİNESİ - GÜNCEL SCL KODU (TP TIMER & EDGE TRIGGERS)
 // ==============================================================================
 
 // ----------------------------------------------------
@@ -14,13 +12,9 @@ END_IF;
 // ----------------------------------------------------
 // 2. ANALOG SİNYAL İŞLEME VE ALARMLAR (SÜREKLİ ÇALIŞANLAR)
 // ----------------------------------------------------
-// PT100 Sıcaklık Sensörünü (0-27648) 0.0 - 1.0 arasına oranlama
 "Temp_Ratio_MD20" := NORM_X(MIN := 0, MAX := 27648, VALUE := "PT100_Raw_IW96");
-
-// Oranlanan değeri gerçek dereceye (0.0 - 150.0 °C) çevirme
 "Current_Water_Temp_MD24" := SCALE_X(MIN := 0.0, MAX := 150.0, VALUE := "Temp_Ratio_MD20");
 
-// Alarm Kontrolü
 IF "Motor_Termik_Ariza" THEN
     "Alarm_Motor_Overload" := TRUE; // (S)
 END_IF;
@@ -33,66 +27,74 @@ END_IF;
 // 3. STATE MACHINE (SIRALI İŞLEM)
 // ----------------------------------------------------
 
-// === ADIM 1: START VE SU ALMA ===
-IF "Start_Button" AND NOT "Step_2_Isitma" AND NOT "Step_3_Dozajlama" 
-   AND NOT "Step_4_Sogutma" AND NOT "Step_5_Tahliye" THEN
-    "Step_1_Su_Alma" := TRUE; // Start butonu Step 1'i başlatır
+// === ADIM 1: START VE SU ALMA (Güvenli Start) ===
+IF "Start_Button" AND "Makine_Hazir_M0.0" THEN
+    "Step_1_Su_Alma" := TRUE;       // (S)
+    "Makine_Hazir_M0.0" := FALSE;   // (R) Başladıktan sonra hazır bitini düşür
 END_IF;
 
-"Su_Valfi_Q0.1" := "Step_1_Su_Alma"; // Bobin çıkışı
+"Su_Valfi_Q0.1" := "Step_1_Su_Alma"; 
 
-// Su alma tamamlandıysa Step 2'ye geçiş (Transition)
 IF "Step_1_Su_Alma" AND "Anlik_Litre" >= "Recete_Su_Hedef" THEN
-    "Step_2_Isitma" := TRUE;  // (S) Yeni Adım
-    "Step_1_Su_Alma" := FALSE; // (R) Eski Adım
+    "Step_2_Isitma" := TRUE;  
+    "Step_1_Su_Alma" := FALSE; 
 END_IF;
 
 // === ADIM 2: ISITMA VE KASKAD PID KONTROL ===
 IF "Step_2_Isitma" THEN
-    "Master_PID".Mode := 3; // PID'leri Otomatik Kiple Başlat
+    "Master_PID".Mode := 3; 
     "Slave_PID".Mode := 3;
 END_IF;
 
-// Hedef sıcaklığa ulaşıldıysa Step 3'e geçiş
+// PID'yi Başlatmak için Yükselen Kenar (R_TRIG)
+"PID_Start_Edge_Inst"(CLK := "Step_2_Isitma");
+"Master_PID".ModeActivate := "PID_Start_Edge_Inst".Q;
+"Slave_PID".ModeActivate := "PID_Start_Edge_Inst".Q;
+
 IF "Step_2_Isitma" AND "Current_Water_Temp_MD24" >= "Target_Temp" THEN
-    "Step_3_Dozajlama" := TRUE; // (S) Yeni Adım
-    "Step_2_Isitma" := FALSE;    // (R) Eski Adım
+    "Step_3_Dozajlama" := TRUE; 
+    "Step_2_Isitma" := FALSE;  
 END_IF;
 
-// === ADIM 3: KİMYASAL DOZAJLAMA (TIMER İLE) ===
+// === ADIM 3: KİMYASAL DOZAJLAMA (TP TIMER İLE) ===
 IF "Step_3_Dozajlama" THEN
-    "Master_PID".Mode := 0; // Pompa kısmına geçildi, Isıtma PID'leri durur
+    "Master_PID".Mode := 0; 
     "Slave_PID".Mode := 0;
 END_IF;
 
-// TON Zamanlayıcısı: Reçetedeki süre kadar bekler
-"Dose_Timer_TON".TON(IN := "Step_3_Dozajlama",
-                     PT := "Recipe_DoseA");
+// PID'yi Durdurmak için Yükselen Kenar (R_TRIG)
+"PID_Stop_Edge_Inst"(CLK := "Step_3_Dozajlama");
+"Master_PID".ModeActivate := "PID_Stop_Edge_Inst".Q;
+"Slave_PID".ModeActivate := "PID_Stop_Edge_Inst".Q;
 
-// Timer süresi bitene kadar (Q çıkışı vermeyene kadar) pompalar çalışsın
-"Dose_Pump_A" := "Step_3_Dozajlama" AND NOT "Dose_Timer_TON".Q;
-"Dose_Pump_B" := "Step_3_Dozajlama" AND NOT "Dose_Timer_TON".Q;
+// TP Zamanlayıcısı: Sinyal gelince direkt başlar ve çıkış verir
+"Dose_Timer_TP"(IN := "Step_3_Dozajlama", 
+                PT := "Recipe_DoseA");
 
-// Süre dolduğunda Step 4'e geçiş
-IF "Step_3_Dozajlama" AND "Dose_Timer_TON".Q THEN
-    "Step_4_Sogutma" := TRUE;  // (S) Yeni Adım
-    "Step_3_Dozajlama" := FALSE; // (R) Eski Adım
+// Çıkışlar TP Timer'ın Q'suna direkt bağlıdır
+"Dose_Pump_A" := "Dose_Timer_TP".Q;
+"Dose_Pump_B" := "Dose_Timer_TP".Q;
+
+// Sürenin bittiği anı yakalamak için Düşen Kenar (F_TRIG)
+"Dose_Timer_F_Edge_Inst"(CLK := "Dose_Timer_TP".Q);
+
+IF "Step_3_Dozajlama" AND "Dose_Timer_F_Edge_Inst".Q THEN
+    "Step_4_Sogutma" := TRUE;  
+    "Step_3_Dozajlama" := FALSE; 
 END_IF;
 
 // === ADIM 4: SOĞUTMA ===
-"Soguk_Su_Valfi_Q0.2" := "Step_4_Sogutma"; // Bobin çıkışı
+"Soguk_Su_Valfi_Q0.2" := "Step_4_Sogutma"; 
 
-// Kumaş güvenli sıcaklığa inene kadar bekle
 IF "Step_4_Sogutma" AND "Current_Water_Temp_MD24" <= "Guvenli_Derece" THEN
-    "Step_5_Tahliye" := TRUE;    // (S) Yeni Adım
-    "Step_4_Sogutma" := FALSE;   // (R) Eski Adım
+    "Step_5_Tahliye" := TRUE;    
+    "Step_4_Sogutma" := FALSE;   
 END_IF;
 
 // === ADIM 5: SUYU TAHLİYE ETME VE RESETLEME ===
-"Tahliye_Valfi_Q0.3" := "Step_5_Tahliye"; // Bobin çıkışı
+"Tahliye_Valfi_Q0.3" := "Step_5_Tahliye"; 
 
-// Su tamamen tahliye edildiyse sistemi sonlandır
 IF "Step_5_Tahliye" AND "Anlik_Litre" <= "Bos_Siniri" THEN
-    "Step_5_Tahliye" := FALSE;   // (R) Kendini kapatır
-    "Makine_Hazir_M0.0" := TRUE; // (S) Yeni boyama için hazır sinyali
+    "Step_5_Tahliye" := FALSE;   
+    "Makine_Hazir_M0.0" := TRUE; // Döngü bitti, makineyi tekrar hazırla
 END_IF;
