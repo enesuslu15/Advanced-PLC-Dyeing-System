@@ -77,6 +77,15 @@ While this simulation focuses on textile dyeing, the underlying **Ladder Logic /
 6. Open the HMI Runtime simulation to interact with the system (select recipe, press START, monitor phases).
 
 ---
+## 🚧 Challenges & Solutions
+
+**1. Precise Chemical Dosing with Timers in SCL**
+* **Challenge:** Initially, using a standard `TON` (Timer On Delay) for dosing caused synchronization issues. The pumps would theoretically activate *after* the timer finished, rather than remaining active precisely during the dosing window.
+* **Solution:** Refactored the SCL logic to utilize a `TP` (Pulse Timer) and incorporated edge triggers (`F_TRIG`). This ensures the chemical pumps activate immediately upon entering the Dosing phase and halt exactly when the required pulse duration is reached, safely triggering the transition to the Cooling phase.
+
+**2. Reliable Cascade PID Activation**
+* **Challenge:** In SCL, simply assigning the integer `3` to the `PID_Compact` `Mode` parameter was insufficient to reliably switch the controllers into automatic mode during high-speed state transitions.
+* **Solution:** Implemented `R_TRIG` (Positive Edge) instances within the state machine structure. When the system enters the Heating phase, the edge trigger pulses the `ModeActivate` pin of both the Master and Slave PIDs. This guarantees a safe, instantaneous, and bumpless transfer to automatic control.
 
 ## 🛠️ Tech Stack
 
